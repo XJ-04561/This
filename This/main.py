@@ -2,49 +2,89 @@
 
 
 from typing import Any, Self, Callable
-from types import MethodType, FunctionType
-import itertools, ast
+import ast
+from ast import Assign, Attribute, Call, Subscript, BinOp, UnaryOp, Compare
+from ast import arg as Argument, keyword as Keyword
 
-def fformat(a : tuple, d : dict, sep : str=", "):
-	return sep.join(itertools.chain(map(str, a), map("{0[0]}={0[1]}".format, d.items())))
+class this: pass
+class ThisContainer:
+	nodeTree : ast.AST = None
+	values : dict[int,Any]
+	add : Callable
 
-class ASTNode:
-	def add(self, node : ast.AST):
-		self.value = node
+oGet = object.__getattribute__
+CONTAINER_NAME = "_refs"
 
+def isConstant(value):
+	if isinstance(value, (type(None), str, bytes, bool, int, float, complex, type(...))):
+		return True
+	elif isinstance(value, (tuple, set)):
+		for el in value:
+			if not isConstant(el):
+				return False
+		return True
+	else:
+		return False
 
-class Index(ast.Subscript,ASTNode):
-	def __init__(self, key):
-		super().__init__(value=self, slice=ast.Attribute(value=ast.Name(id="self", ctx=ast.Load()), attr=key, ctx=ast.Load()), ctx=ast.Load())
-
-class Call(ast.Call):
-	def __init__(self, args, kwargs):
-		super().__init__(func=None, args=[ast.Attribute(value=ast.Name(id="self", ctx=ast.Load()), attr=x, ctx=ast.Load()) for x in args], keywords=[ast.keyword(arg=name, value=ast.Constant(value=ast.Attribute(value=ast.Name(id="self", ctx=ast.Load()), attr=name, ctx=ast.Load()))) for name in kwargs])
+def createOperation(self, right=None, op=None):
 	
-	def add(self, node : ast.AST):
-		self.func = node
+	if isinstance(op, ast.unaryop):
+		container(self).nodeTree = UnaryOp(op=op, operand=container(self).nodeTree)
+	elif isinstance(op, ast.operator):
+		container(self).nodeTree = BinOp(op=op, left=container(self).nodeTree, right=Reference(right, container(self)))
+	elif isinstance(op, ast.cmpop):
+		container(self).nodeTree = Compare(ops=[op], left=container(self).nodeTree, comparators=[Reference(right, container(self))])
+	
+	return self
 
-class Attribute(ast.Attribute,ASTNode):
-	def __init__(self, attrName : str):
-		super().__init__(value=None, attr=attrName, ctx=ast.Load())
+class Reference(Subscript):
 
-class Compare(ast.Compare,ASTNode):
-	def __init__(self, left=None, op=None, right=None):
-		if left is None:
-			super().__init__(left=left, ops=[op], comparators=[ast.Attribute(value=ast.Name(id="self", ctx=ast.Load()), attr=right, ctx=ast.Load())])
-		elif right is None:
-			super().__init__(left=ast.Attribute(value=ast.Name(id="self", ctx=ast.Load()), attr=left, ctx=ast.Load()), ops=[op], comparators=[right])
-	def add(self, left=None, right=None):
-		if left is not None:
-			self.left = left
-		if right is not None:
-			self.right = right
+	actualValue : Any
+	def __new__(cls : type[Self], actualValue : Any, container : ThisContainer):
+		if isinstance(actualValue, (this, type(this))):
+			return ast.Name(id="this", ctx=ast.Load())
+		elif isConstant(actualValue):
+			return ast.Constant(value=actualValue)
+		else:
+			return super().__new__(cls)
+	
+	def __init__(self : Self, actualValue : Any, container : ThisContainer):
+		self.actualValue = actualValue
+		container.add(actualValue)
+		super().__init__(value=ast.Name(id=CONTAINER_NAME, ctx=ast.Load()), slice=ast.Constant(value=id(actualValue)), ctx=ast.Load())
+
+def visit_Reference(self, node):
+	value = node.actualValue
+	if isinstance(value, tuple):
+		with self.delimit("(", ")"):
+			self.items_view(self._write_constant, value)
+	elif value is ...:
+		self.write("...")
+	else:
+		self._write_constant(value)
+
+ast._Unparser.visit_Reference = visit_Reference
+
+class ThisContainer:
+
+	nodeTree : ast.AST = None
+	values : dict[int,Any]
+	def __init__(self):
+		self.nodeTree = ast.Name(id="this", ctx=ast.Load())
+		self.values = {}
+	def add(self, value):
+		self.values[id(value)] = value
+
+def container(self) -> ThisContainer:
+	return oGet(self, "container")
 
 class ThisCallable:
-	
-	__callback__ : FunctionType
-	def __init__(self, docstring : str, node, __dict__):
-		self.__doc__ = docstring
+
+	__callback__ : Callable
+	values : dict[int,Any]
+	def __init__(self, container : ThisContainer):
+
+		self.__doc__ = ast.unparse(container.nodeTree)
 		module = ast.Module(
 			body=[
 				ast.FunctionDef(
@@ -52,41 +92,52 @@ class ThisCallable:
 					args=ast.arguments(
 						posonlyargs=[],
 						args=[
-							ast.arg(arg="self", annotation=None),
-							ast.arg(arg="obj", annotation=None)
+							ast.arg(arg=CONTAINER_NAME, annotation=None),
+							ast.arg(arg="this", annotation=None)
 						],
 						kwonlyargs=[],
 						kw_defaults=[],
 						defaults=[]),
 					decorator_list=[],
-					body=[
-						ast.Expr(value=ast.Constant(value=docstring)),
-						ast.Return(value=node)
-					])],
+					body=[ast.Return(value=container.nodeTree)
+			])],
 			type_ignores=[]
 		)
+		self.values = container.values
 		ast.fix_missing_locations(module)
-		exec(compile(module, filename="this-callback-creation", mode="exec"), __dict__)
-		self.__dict__ |= __dict__
+		exec(compile(module, filename="this-callback-creation", mode="exec"), self.__dict__)
 	
 	def __call__(self : Self, obj : Any) -> Any:
+
 		try:
-			return self.__callback__(self, obj)
+			return self.__callback__(self.values, obj)
 		except Exception as e:
 			e.add_note(self.__doc__)
 			raise e
-	
 
-oGet = object.__getattribute__
-
-class this: pass
 class ThisBase:
-	"""A `this` statement (class) that acts like the `this` statement in JavaScript.
-	When you need a function/lambda/callback to be called by a mapper (like `map`) that accesses each object's attributes
-	and methods, then simply put `this` there and do on it what you would want done on each object in your iterable. But
+	"""A `this` statement (class) that acts like the `this` statement in JavaScript. Except even smaller.
+	When you need a function/lambda/callback that only accesses an object's attributes & methods.
+	Simply put `this` there and do on it what you would want done on each object in your iterable. But
 	you must finish it by putting star/asterisk (`*`) in front of it, that makes it compile the defined expression as a
 	function and returns a callable object which performs the given expression and returns the output.
-	Example:
+	
+	### Javascript reference:
+	```js
+	function(){return this.myMethod().myAttr}
+	// Or
+	(obj) => obj.myMethod().myAttr
+	```
+	### Python reference:
+	```python
+	lambda obj : obj.myMethod().myAttr
+	```
+	### This package:
+	```python
+	class this: pass
+	this.myMethod().myAttr}
+	```
+	## Example Usage:
 	```python
 	from This import this
 
@@ -103,85 +154,94 @@ class ThisBase:
 	# apple
 	```
 	"""
-	__name__ : str
-	nodeTree : ast.AST
-	values : dict
-	valuesLength : int
-	def __new__(cls) -> None:
-		self = super().__new__(cls)
-		self.__name__ = "this"
-		self.nodeTree = ast.Name(id="obj", ctx=ast.Load())
-		self.values = {}
-		self.valuesLength = 0
-		return self
+	container : ThisContainer
 	
+	def __init__(self):
+		self.container = ThisContainer()
+
 	def __iter__(self):
-		yield ThisCallable(oGet(self, '__name__'), oGet(self, 'nodeTree'), oGet(self, 'values'))
+		yield ThisCallable(container(self))
 	def __next__(self):
-		return ThisCallable(oGet(self, '__name__'), oGet(self, 'nodeTree'), oGet(self, 'values'))
+		return ThisCallable(container(self))
 	
 	def __repr__(self):
-		return f"<{oGet(self, '__name__')} at {hex(id(self))}>"
+		return f"<{ast.unparse(container(self).nodeTree)} at {hex(id(self))}>"
 
 	def __getattribute__(self, name: str) -> Self:
-		node = Attribute(name)
-		self.__name__ = oGet(self, "__name__") + f".{name}"
-		node.add(oGet(self, "nodeTree"))
-		self.nodeTree = node
+		container(self).nodeTree = Attribute(value=container(self).nodeTree, attr=name, ctx=ast.Load())
 		return self
 	def __call__(self, *args, **kwargs) -> Self:
-		argNames, kwargNames = [], []
-		d = oGet(self, "values")
-		v = oGet(self, "valuesLength")
-		for arg in args:
-			name = f"arg{v}"
-			d[name] = arg
-			argNames.append(name)
-			v += 1
-		for kwarg in kwargs.values():
-			name = f"kwarg{v}"
-			d[name] = kwarg
-			kwargNames.append(name)
-			v += 1
-		self.valuesLength = v
-		node = Call(args=argNames, kwargs=kwargNames)
-		self.__name__ = oGet(self, "__name__") + f"({fformat(args, kwargs)})"
-		node.add(oGet(self, "nodeTree"))
-		self.nodeTree = node
+		cont = container(self)
+		cont.nodeTree = Call(func=cont.nodeTree, args=[Reference(arg, cont) for arg in args], keywords=[Keyword(name, Reference(kwargs[name], cont)) for name in kwargs])
 		return self
 	def __getitem__(self, key: Any) -> Self:
-		name = f"key{oGet(self, 'valuesLength')}"
-		oGet(self, "values")[name] = key
-		node = Index(name)
-		self.__name__ = oGet(self, "__name__") + f"[{key if not isinstance(key, tuple) else ', '.join(map(str, key))}]"
-		node.add(oGet(self, "nodeTree"))
-		self.nodeTree = node
+		container(self).nodeTree = Subscript(value=container(self).nodeTree, slice=Reference(key, container(self)), ctx=ast.Load())
 		return self
 	
-	def __eq__(self, other):
-		name = f"value{oGet(self, 'valuesLength')}"
-		oGet(self, "values")[name] = other
-		node = Compare(op=ast.Eq(), right=name)
-		self.__name__ = oGet(self, "__name__") + f" == {other}"
-		node.add(left=oGet(self, "nodeTree"))
-		self.nodeTree = node
-		return self
+	# Comparisons
+	def __eq__(self, other):		return createOperation(self, other, ast.Eq())
+	def __ne__(self, other):		return createOperation(self, other, ast.NotEq())
+	def __lt__(self, other):		return createOperation(self, other, ast.Lt())
+	def __le__(self, other):		return createOperation(self, other, ast.LtE())
+	def __gt__(self, other):		return createOperation(self, other, ast.Gt())
+	def __ge__(self, other):		return createOperation(self, other, ast.GtE())
+	def __contains__(self, other):	raise NotImplementedError("`item in this`")
+
+	# Unary operations
+	def __neg__(self):				return createOperation(self, op=ast.USub())
+	def __pos__(self):				return createOperation(self, op=ast.UAdd())
+	def __not__(self):				return createOperation(self, op=ast.Not())
+	def __invert__(self):			return createOperation(self, op=ast.Invert())
+	
+	# Binary operations
+	def __add__(self, other):		return createOperation(self, other, ast.Add())
+	def __sub__(self, other):		return createOperation(self, other, ast.Sub())
+	def __mul__(self, other):		return createOperation(self, other, ast.Mult())
+	def __div__(self, other):		return createOperation(self, other, ast.Div())
+	def __floordiv__(self, other):	return createOperation(self, other, ast.FloorDiv())
+	def __mod__(self, other):		return createOperation(self, other, ast.Mod())
+	def __pow__(self, other):		return createOperation(self, other, ast.Pow())
+	def __lshift__(self, other):	return createOperation(self, other, ast.LShift())
+	def __rshift__(self, other):	return createOperation(self, other, ast.RShift())
+	def __or__(self, other):		return createOperation(self, other, ast.BitOr())
+	def __xor__(self, other):		return createOperation(self, other, ast.BitXor())
+	def __and__(self, other):		return createOperation(self, other, ast.BitAnd())
+	def __matmul__(self, other):	return createOperation(self, other, ast.MatMult())
 
 class ThisType(type):
-	def __getattribute__(self, name: str) -> this:
-		obj = oGet(ThisBase, "__new__")(self)
-		return oGet(obj, "__getattribute__")(name)
-	def __call__(self, *args: Any, **kwds: Any) -> this:
-		obj = oGet(ThisBase, "__new__")(self)
-		return obj(*args, **kwds)
-	def __getitem__(self, key: Any) -> this:
-		obj = oGet(ThisBase, "__new__")(self)
-		return obj[key]
-	def __eq__(self, other: Any) -> this:
-		obj = oGet(ThisBase, "__new__")(self)
-		return obj == other
-	def __repr__(self):
-		return "<class 'this' - A Magical Class>"
+	def __getattribute__(self, name: str) -> this:			return getattr(super().__call__(), name)
+	def __call__(self, *args: Any, **kwds: Any) -> this:	return super().__call__()(*args, **kwds)
+	def __getitem__(self, key: Any) -> this:				return super().__call__()[key]
+
+	# Comparisons
+	def __eq__(self, other):		return super().__call__() == other
+	def __ne__(self, other):		return super().__call__() != other
+	def __lt__(self, other):		return super().__call__() < other
+	def __le__(self, other):		return super().__call__() <= other
+	def __gt__(self, other):		return super().__call__() > other
+	def __ge__(self, other):		return super().__call__() >= other
+	def __contains__(self, other):	raise NotImplementedError("`item in this`")
+
+	# Unary operations
+	def __neg__(self):				return -super().__call__()
+	def __pos__(self):				return +super().__call__()
+	def __not__(self):				return not super().__call__()
+	def __invert__(self):			return ~super().__call__()
+	
+	# Binary operations
+	def __add__(self, other):		return super().__call__() + other
+	def __sub__(self, other):		return super().__call__() - other
+	def __mul__(self, other):		return super().__call__() * other
+	def __div__(self, other):		return super().__call__() / other
+	def __floordiv__(self, other):	return super().__call__() // other
+	def __mod__(self, other):		return super().__call__() % other
+	def __pow__(self, other):		return super().__call__() ** other
+	def __lshift__(self, other):	return super().__call__() << other
+	def __rshift__(self, other):	return super().__call__() >> other
+	def __or__(self, other):		return super().__call__() | other
+	def __xor__(self, other):		return super().__call__() ^ other
+	def __and__(self, other):		return super().__call__() & other
+	def __matmul__(self, other):	return super().__call__() @ other
 
 
 this = ThisType("this", (ThisBase,), {"__doc__" : ThisBase.__doc__})
@@ -214,4 +274,3 @@ if __name__ == "__main__":
 	for item in map(*this.lower(), filter(*this.__class__ == str, myMixedList)):
 		print(item)
 	# apple
-	
