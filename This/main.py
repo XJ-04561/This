@@ -1,4 +1,41 @@
+"""A `this` statement (class) that acts like the `this` statement in JavaScript. Except even smaller.
+When you need a function/lambda/callback that only accesses an object's attributes & methods.
+Simply put `this` there and do on it what you would want done on each object in your iterable. But
+you must finish it by putting star/asterisk (`*`) in front of it, that makes it compile the defined expression as a
+function and returns a callable object which performs the given expression and returns the output.
 
+### Javascript reference:
+```js
+function(){return this.myMethod().myAttr}
+// Or
+(obj) => obj.myMethod().myAttr
+```
+### Python reference:
+```python
+lambda obj : obj.myMethod().myAttr
+```
+### This package:
+```python
+class this: pass
+this.myMethod().myAttr}
+```
+## Example Usage:
+```python
+from This import this
+
+myList = ["Apple", "Lion", "Tennis"]
+myMixedList = ["Apple", 12, b"\x03Oo"]
+for item in map(*this.lower(), myList):
+	print(item)
+# apple
+# lion
+# tennis
+
+for item in map(*this.lower(), filter(*this.__class__ == str, myMixedList)):
+	print(item)
+# apple
+```
+"""
 
 
 from typing import Any, Self, Callable
@@ -13,6 +50,8 @@ class ThisContainer:
 	add : Callable
 
 oGet = object.__getattribute__
+def container(self) -> ThisContainer:
+	return oGet(self, "container")
 CONTAINER_NAME = "_refs"
 
 def isConstant(value):
@@ -40,17 +79,20 @@ def createOperation(self, right=None, op=None):
 class Reference(Subscript):
 
 	actualValue : Any
-	def __new__(cls : type[Self], actualValue : Any, container : ThisContainer):
-		if isinstance(actualValue, (this, type(this))):
+	def __new__(cls : type[Self], actualValue : Any, cont : ThisContainer):
+		if actualValue is this:
 			return ast.Name(id="this", ctx=ast.Load())
+		elif type(actualValue) is this:
+			cont.values.update(container(actualValue).values)
+			return container(actualValue).nodeTree
 		elif isConstant(actualValue):
 			return ast.Constant(value=actualValue)
 		else:
 			return super().__new__(cls)
 	
-	def __init__(self : Self, actualValue : Any, container : ThisContainer):
+	def __init__(self : Self, actualValue : Any, cont : ThisContainer):
 		self.actualValue = actualValue
-		container.add(actualValue)
+		cont.add(actualValue)
 		super().__init__(value=ast.Name(id=CONTAINER_NAME, ctx=ast.Load()), slice=ast.Constant(value=id(actualValue)), ctx=ast.Load())
 
 def visit_Reference(self, node):
@@ -75,16 +117,13 @@ class ThisContainer:
 	def add(self, value):
 		self.values[id(value)] = value
 
-def container(self) -> ThisContainer:
-	return oGet(self, "container")
-
 class ThisCallable:
 
 	__callback__ : Callable
 	values : dict[int,Any]
 	def __init__(self, container : ThisContainer):
 
-		self.__doc__ = ast.unparse(container.nodeTree)
+		self.tree = container.nodeTree
 		module = ast.Module(
 			body=[
 				ast.FunctionDef(
@@ -112,48 +151,11 @@ class ThisCallable:
 		try:
 			return self.__callback__(self.values, obj)
 		except Exception as e:
-			e.add_note(self.__doc__)
+			e.add_note(ast.unparse(self.tree))
 			raise e
 
 class ThisBase:
-	"""A `this` statement (class) that acts like the `this` statement in JavaScript. Except even smaller.
-	When you need a function/lambda/callback that only accesses an object's attributes & methods.
-	Simply put `this` there and do on it what you would want done on each object in your iterable. But
-	you must finish it by putting star/asterisk (`*`) in front of it, that makes it compile the defined expression as a
-	function and returns a callable object which performs the given expression and returns the output.
 	
-	### Javascript reference:
-	```js
-	function(){return this.myMethod().myAttr}
-	// Or
-	(obj) => obj.myMethod().myAttr
-	```
-	### Python reference:
-	```python
-	lambda obj : obj.myMethod().myAttr
-	```
-	### This package:
-	```python
-	class this: pass
-	this.myMethod().myAttr}
-	```
-	## Example Usage:
-	```python
-	from This import this
-
-	myList = ["Apple", "Lion", "Tennis"]
-	myMixedList = ["Apple", 12, b"\x03Oo"]
-	for item in map(*this.lower(), myList):
-		print(item)
-	# apple
-	# lion
-	# tennis
-
-	for item in map(*this.lower(), filter(*this.__isinstance__(str), myMixedList)):
-		print(item)
-	# apple
-	```
-	"""
 	container : ThisContainer
 	
 	def __init__(self):
