@@ -42,6 +42,7 @@ from typing import Any, Self, Callable
 import ast
 from ast import Assign, Attribute, Call, Subscript, BinOp, UnaryOp, Compare
 from ast import arg as Argument, keyword as Keyword
+from functools import cached_property, cache
 
 class this: pass
 class ThisContainer:
@@ -117,13 +118,18 @@ class ThisContainer:
 	def add(self, value):
 		self.values[id(value)] = value
 
-class ThisCallable:
+class Function:
 
 	__callback__ : Callable
+	__argname__ : str = "this"
+	self : Self
 	values : dict[int,Any]
 	def __init__(self, container : ThisContainer):
-
+		
+		self.self = self
 		self.tree = container.nodeTree
+		self.values = self.__dict__[CONTAINER_NAME] = container.values
+		
 		module = ast.Module(
 			body=[
 				ast.FunctionDef(
@@ -131,28 +137,28 @@ class ThisCallable:
 					args=ast.arguments(
 						posonlyargs=[],
 						args=[
-							ast.arg(arg=CONTAINER_NAME, annotation=None),
-							ast.arg(arg="this", annotation=None)
+							ast.arg(arg=self.__argname__, annotation=None)
 						],
 						kwonlyargs=[],
 						kw_defaults=[],
 						defaults=[]),
 					decorator_list=[],
 					body=[ast.Return(value=container.nodeTree)
-			])],
-			type_ignores=[]
+				])],
+			type_ignores=[],
 		)
-		self.values = container.values
-		ast.fix_missing_locations(module)
-		exec(compile(module, filename="this-callback-creation", mode="exec"), self.__dict__)
-	
-	def __call__(self : Self, obj : Any) -> Any:
 
-		try:
-			return self.__callback__(self.values, obj)
-		except Exception as e:
-			e.add_note(ast.unparse(self.tree))
-			raise e
+		ast.fix_missing_locations(module)
+		exec(compile(module, filename=repr(self), mode="exec"), self.__dict__)
+	
+	@cached_property
+	def __expr__(self):
+		return ast.unparse(self.tree)
+	
+	def __repr__(self):
+		return f"<This.Function ({self.__argname__}): return {self.__expr__} at {hex(id(self))}>"
+	
+	def __call__(self, this): return self.__callback__(this)
 
 class ThisBase:
 	
@@ -162,9 +168,9 @@ class ThisBase:
 		self.container = ThisContainer()
 
 	def __iter__(self):
-		yield ThisCallable(container(self))
+		yield Function(container(self))
 	def __next__(self):
-		return ThisCallable(container(self))
+		return Function(container(self))
 	
 	def __repr__(self):
 		return f"<{ast.unparse(container(self).nodeTree)} at {hex(id(self))}>"
@@ -256,15 +262,28 @@ if __name__ == "__main__":
 		def wow(self, x):
 			return {key:value*x for key,value in self._d.items()}
 	
+	class CustomClass:
+		a : int
+		b : str
+		def __init__(self, a, b):
+			self.a, self.b = a, b
+		def __index__(self):
+			return self.a
+		def __hash__(self):
+			return hash(self.b)
+	
 	print(this)
 	print(this.att)
 	print(this(1,2,h=8))
 	print(this[1,3])
 	print(this.att(1,2,h=8)[1,3])
+	print(next(this.att(1,2,h=8)[1,3]))
 
-	for item in map(*this.wow(2)["*"], [Test(i) for i in range(10)]):
+	for item in map(*this.wow(2)["*"], [Test(i) for i in range(4)]):
 		print(item)
-	
+	for item in map(*this[CustomClass(1,"*")], [("b","a"), ("d","c")]):
+		print(item)
+
 	myList = ["Apple", "Lion", "Tennis"]
 	myMixedList = ["Apple", 12, b"\x03Oo"]
 	for item in map(*this.lower(), myList):
