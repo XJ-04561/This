@@ -251,8 +251,7 @@ class ThisType(type):
 	def __and__(self, other):		return super().__call__() & other
 	def __matmul__(self, other):	return super().__call__() @ other
 
-
-this = ThisType("this", (ThisBase,), {"__doc__" : ThisBase.__doc__})
+class this(ThisBase, metaclass=ThisType): pass
 
 if __name__ == "__main__":
 	
