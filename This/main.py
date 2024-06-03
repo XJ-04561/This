@@ -38,7 +38,7 @@ for item in map(*this.lower(), filter(*this.__class__ == str, myMixedList)):
 """
 
 
-from typing import Any, Self, Callable
+from typing import Any, Callable
 import ast
 from ast import Assign, Attribute, Call, Subscript, BinOp, UnaryOp, Compare
 from ast import arg as Argument, keyword as Keyword
@@ -80,7 +80,7 @@ def createOperation(self, right=None, op=None):
 class Reference(Subscript):
 
 	actualValue : Any
-	def __new__(cls : type[Self], actualValue : Any, cont : ThisContainer):
+	def __new__(cls : type["Reference"], actualValue : Any, cont : ThisContainer):
 		if actualValue is this:
 			return ast.Name(id="this", ctx=ast.Load())
 		elif type(actualValue) is this:
@@ -91,7 +91,7 @@ class Reference(Subscript):
 		else:
 			return super().__new__(cls)
 	
-	def __init__(self : Self, actualValue : Any, cont : ThisContainer):
+	def __init__(self : "Reference", actualValue : Any, cont : ThisContainer):
 		self.actualValue = actualValue
 		cont.add(actualValue)
 		super().__init__(value=ast.Name(id=CONTAINER_NAME, ctx=ast.Load()), slice=ast.Constant(value=id(actualValue)), ctx=ast.Load())
@@ -122,7 +122,7 @@ class Function:
 
 	__callback__ : Callable
 	__argname__ : str = "this"
-	self : Self
+	self : "Function"
 	values : dict[int,Any]
 	def __init__(self, container : ThisContainer):
 		
@@ -175,14 +175,14 @@ class ThisBase:
 	def __repr__(self):
 		return f"<{ast.unparse(container(self).nodeTree)} at {hex(id(self))}>"
 
-	def __getattribute__(self, name: str) -> Self:
+	def __getattribute__(self, name: str) -> "ThisBase":
 		container(self).nodeTree = Attribute(value=container(self).nodeTree, attr=name, ctx=ast.Load())
 		return self
-	def __call__(self, *args, **kwargs) -> Self:
+	def __call__(self, *args, **kwargs) -> "ThisBase":
 		cont = container(self)
 		cont.nodeTree = Call(func=cont.nodeTree, args=[Reference(arg, cont) for arg in args], keywords=[Keyword(name, Reference(kwargs[name], cont)) for name in kwargs])
 		return self
-	def __getitem__(self, key: Any) -> Self:
+	def __getitem__(self, key: Any) -> "ThisBase":
 		container(self).nodeTree = Subscript(value=container(self).nodeTree, slice=Reference(key, container(self)), ctx=ast.Load())
 		return self
 	
